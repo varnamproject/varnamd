@@ -9,13 +9,19 @@ import (
 	flag "github.com/ogier/pflag"
 )
 
-func main() {
-	var learnOnly bool
-	var port, maxProcs int
+var (
+	learnOnly bool
+	port      int
+	maxProcs  int
+)
+
+func init() {
 	flag.BoolVarP(&learnOnly, "learn-only", "l", false, "Starts a learn only daemon")
 	flag.IntVarP(&port, "port", "p", 3000, "Starts the daemon in a specific port")
 	flag.IntVarP(&maxProcs, "max-procs", "n", 1, "Number of go routines for each module. Useful only if not started with -learn-only switch")
+}
 
+func main() {
 	flag.Parse()
 
 	varnamdaemon.Init(learnOnly, maxProcs)
