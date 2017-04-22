@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 	"path"
 	"strconv"
@@ -16,13 +14,14 @@ import (
 )
 
 type syncDispatcher struct {
-	quit   chan struct{}
-	force  chan bool // Send a TRUE message so that execution begins immediatly
-	ticker *time.Ticker
+	quit     chan struct{}
+	force    chan bool // Send a TRUE message so that execution begins immediatly
+	upstream UpstreamClient
+	ticker   *time.Ticker
 }
 
 func newSyncDispatcher(intervalInSeconds time.Duration) *syncDispatcher {
-	return &syncDispatcher{ticker: time.NewTicker(intervalInSeconds), force: make(chan bool), quit: make(chan struct{})}
+	return &syncDispatcher{ticker: time.NewTicker(intervalInSeconds), force: make(chan bool), quit: make(chan struct{}), upstream: &upstreamClient{}}
 }
 
 func (s *syncDispatcher) start() {
@@ -44,9 +43,9 @@ func (s *syncDispatcher) start() {
 		for {
 			select {
 			case <-s.ticker.C:
-				performSync()
+				s.performSync()
 			case <-s.force:
-				performSync()
+				s.performSync()
 			case <-s.quit:
 				s.ticker.Stop()
 				return
@@ -63,24 +62,20 @@ func (s *syncDispatcher) runNow() {
 	s.force <- true
 }
 
-func performSync() {
+func (s *syncDispatcher) performSync() {
 	log.Println("---SYNC BEGIN---")
 	log.Printf("Config: %v\n", varnamdConfig)
 
-	syncWordsFromUpstream()
+	for langCode := range varnamdConfig.schemesToDownload {
+		log.Printf("Sync: %s\n", langCode)
+		s.syncWordsFromUpstreamFor(langCode)
+	}
 
 	log.Println("---SYNC DONE---")
 }
 
-func syncWordsFromUpstream() {
-	for langCode := range varnamdConfig.schemesToDownload {
-		log.Printf("Sync: %s\n", langCode)
-		syncWordsFromUpstreamFor(langCode)
-	}
-}
-
-func syncWordsFromUpstreamFor(langCode string) {
-	corpusDetails, err := getCorpusDetails(langCode)
+func (s *syncDispatcher) syncWordsFromUpstreamFor(langCode string) {
+	corpusDetails, err := s.upstream.GetCorpusDetails()
 	if err != nil {
 		log.Printf("Error getting corpus details for '%s'. %s\n", langCode, err.Error())
 		return
@@ -160,66 +155,20 @@ func learnFromFile(langCode, fileToLearn string) {
 }
 
 func downloadWordsAndUpdateOffset(langCode string, offset int) (string, error) {
-	count, filePath, err := downloadWords(langCode, offset)
-	if err != nil {
-		log.Printf("Error downloading words for '%s'. %s\n", langCode, err.Error())
-		return "", err
-	}
+	//count, filePath, err := downloadWords(langCode, offset)
+	//if err != nil {
+	//log.Printf("Error downloading words for '%s'. %s\n", langCode, err.Error())
+	//return "", err
+	//}
 
-	err = setDownloadOffset(langCode, offset+count)
-	if err != nil {
-		log.Printf("Error setting download offset for '%s'. %s\n", langCode, err.Error())
-		return "", err
-	}
+	//err = setDownloadOffset(langCode, offset+count)
+	//if err != nil {
+	//log.Printf("Error setting download offset for '%s'. %s\n", langCode, err.Error())
+	//return "", err
+	//}
 
-	return filePath, nil
-}
-
-func getCorpusDetails(langCode string) (*libvarnam.CorpusDetails, error) {
-	url := fmt.Sprintf("%s/meta/%s", varnamdConfig.upstream, langCode)
-	log.Printf("Fetching corpus details for '%s'\n", langCode)
-	var m metaResponse
-	err := getJSONResponse(url, &m)
-	if err != nil {
-		return nil, err
-	}
-	log.Printf("Corpus size: %d\n", m.Result.WordsCount)
-	return m.Result, nil
-}
-
-// Downloads words from upstream starting from the specified offset and stores it locally in the learn queue
-// Returns the number of words downloaded, local file path and error if any
-func downloadWords(langCode string, offset int) (totalWordsDownloaded int, downloadedFilePath string, err error) {
-	url := fmt.Sprintf("%s/download/%s/%d", varnamdConfig.upstream, langCode, offset)
-	var response downloadResponse
-	err = getJSONResponse(url, &response)
-	if err != nil {
-		return 0, "", err
-	}
-	downloadedFilePath, err = transformAndPersistWords(langCode, offset, &response)
-	if err != nil {
-		log.Printf("Download was successful, but failed to persist to local learn queue. %s\n", err.Error())
-		return 0, "", err
-	}
-
-	return response.Count, downloadedFilePath, nil
-}
-
-func transformAndPersistWords(langCode string, offset int, dresp *downloadResponse) (string, error) {
-	learnQueueDir := getLearnQueueDir(langCode)
-	targetFile, err := os.Create(path.Join(learnQueueDir, fmt.Sprintf("%s.%d", langCode, offset)))
-	if err != nil {
-		return "", err
-	}
-	defer targetFile.Close()
-
-	for _, word := range dresp.Words {
-		_, err = targetFile.WriteString(fmt.Sprintf("%s %d\n", word.Word, word.Confidence))
-		if err != nil {
-			return "", err
-		}
-	}
-	return targetFile.Name(), nil
+	//return filePath, nil
+	return "", nil
 }
 
 func getFilesFromLearnQueue(langCode string) []string {
@@ -237,21 +186,6 @@ func getFilesFromLearnQueue(langCode string) []string {
 	}
 
 	return files
-}
-
-func getJSONResponse(url string, output interface{}) error {
-	log.Printf("GET: '%s'\n", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	jsonDecoder := json.NewDecoder(resp.Body)
-	err = jsonDecoder.Decode(output)
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func getDownloadOffset(langCode string) int {
