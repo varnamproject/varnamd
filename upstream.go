@@ -11,7 +11,13 @@ import (
 // Implements an upstream API client
 type UpstreamClient interface {
 	GetCorpusDetails() (*libvarnam.CorpusDetails, error)
-	DownloadWords(offset int) ([]*word, error)
+	DownloadWords(offset int) (*page, error)
+}
+
+// A single page of words downloaded
+type page struct {
+	offset int
+	words  []*word
 }
 
 type upstreamClient struct {
@@ -33,7 +39,7 @@ func (c *upstreamClient) GetCorpusDetails() (*libvarnam.CorpusDetails, error) {
 	return m.Result, nil
 }
 
-func (c *upstreamClient) DownloadWords(offset int) ([]*word, error) {
+func (c *upstreamClient) DownloadWords(offset int) (*page, error) {
 	url := fmt.Sprintf("%s/download/%s/%d", c.url, c.langCode, offset)
 	var response downloadResponse
 	err := getJSONResponse(url, &response)
@@ -41,7 +47,7 @@ func (c *upstreamClient) DownloadWords(offset int) ([]*word, error) {
 		return nil, err
 	}
 
-	return response.Words, nil
+	return &page{offset: offset, words: response.Words}, nil
 }
 
 func getJSONResponse(url string, output interface{}) error {

@@ -15,7 +15,7 @@ func TestGetCorpusDetails(t *testing.T) {
 
 func TestDownloadWords(t *testing.T) {
 	c := newUpstreamClient("ml", "https://api.varnamproject.com")
-	words, err := c.DownloadWords(0)
+	p, err := c.DownloadWords(0)
 	assert.Nil(t, err, "err should be nothing")
-	assert.True(t, len(words) > 0)
+	assert.True(t, len(p.words) > 0)
 }

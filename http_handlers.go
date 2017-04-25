@@ -282,20 +282,20 @@ func learnHandler(w http.ResponseWriter, r *http.Request) {
 	renderJSON(w, "success")
 }
 
-func toggleDownloadEnabledStatus(w http.ResponseWriter, r *http.Request, status bool) {
-	params := parseParams(r)
-	err := varnamdConfig.setDownloadStatus(params.langCode, status)
-	if err != nil {
-		renderError(w, err)
-	} else {
-		renderJSON(w, newStandardResponse(""))
-	}
-}
+//func toggleDownloadEnabledStatus(w http.ResponseWriter, r *http.Request, status bool) {
+//params := parseParams(r)
+//err := varnamdConfig.setDownloadStatus(params.langCode, status)
+//if err != nil {
+//renderError(w, err)
+//} else {
+//renderJSON(w, newStandardResponse(""))
+//}
+//}
 
 func enableDownload(w http.ResponseWriter, r *http.Request) {
-	toggleDownloadEnabledStatus(w, r, true)
+	//toggleDownloadEnabledStatus(w, r, true)
 }
 
 func disableDownload(w http.ResponseWriter, r *http.Request) {
-	toggleDownloadEnabledStatus(w, r, false)
+	//toggleDownloadEnabledStatus(w, r, false)
 }

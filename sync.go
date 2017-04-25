@@ -25,33 +25,33 @@ func newSyncDispatcher(intervalInSeconds time.Duration) *syncDispatcher {
 }
 
 func (s *syncDispatcher) start() {
-	err := createSyncMetadataDir()
-	if err != nil {
-		fmt.Printf("Failed to create sync metadata directory. Sync will be disabled.\nActual error: %s\n", err.Error())
-		return
-	}
-	for s := range varnamdConfig.schemesToDownload {
-		// download cache directory for each of the languages
-		err = createLearnQueueDir(s)
-		if err != nil {
-			fmt.Printf("Failed to create learn queue directory for '%s'. Sync will be disabled.\nActual error: %s\n", err.Error())
-			return
-		}
-	}
+	//err := createSyncMetadataDir()
+	//if err != nil {
+	//fmt.Printf("Failed to create sync metadata directory. Sync will be disabled.\nActual error: %s\n", err.Error())
+	//return
+	//}
+	//for s := range varnamdConfig.schemesToDownload {
+	//// download cache directory for each of the languages
+	//err = createLearnQueueDir(s)
+	//if err != nil {
+	//fmt.Printf("Failed to create learn queue directory for '%s'. Sync will be disabled.\nActual error: %s\n", err.Error())
+	//return
+	//}
+	//}
 
-	go func() {
-		for {
-			select {
-			case <-s.ticker.C:
-				s.performSync()
-			case <-s.force:
-				s.performSync()
-			case <-s.quit:
-				s.ticker.Stop()
-				return
-			}
-		}
-	}()
+	//go func() {
+	//for {
+	//select {
+	//case <-s.ticker.C:
+	//s.performSync()
+	//case <-s.force:
+	//s.performSync()
+	//case <-s.quit:
+	//s.ticker.Stop()
+	//return
+	//}
+	//}
+	//}()
 }
 
 func (s *syncDispatcher) stop() {
@@ -66,10 +66,10 @@ func (s *syncDispatcher) performSync() {
 	log.Println("---SYNC BEGIN---")
 	log.Printf("Config: %v\n", varnamdConfig)
 
-	for langCode := range varnamdConfig.schemesToDownload {
-		log.Printf("Sync: %s\n", langCode)
-		s.syncWordsFromUpstreamFor(langCode)
-	}
+	//for langCode := range varnamdConfig.schemesToDownload {
+	//log.Printf("Sync: %s\n", langCode)
+	//s.syncWordsFromUpstreamFor(langCode)
+	//}
 
 	log.Println("---SYNC DONE---")
 }
