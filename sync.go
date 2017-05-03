@@ -1,244 +1,139 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"os"
 	"path"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/varnamproject/libvarnam-golang"
+	libvarnam "github.com/varnamproject/libvarnam-golang"
 )
 
-type syncDispatcher struct {
-	quit     chan struct{}
-	force    chan bool // Send a TRUE message so that execution begins immediatly
-	upstream UpstreamClient
-	ticker   *time.Ticker
+var errNothingToSync = errors.New("nothing to sync")
+
+type progressFunc func(*syncProgress, error)
+
+type corpusSync struct {
+	langCode         string
+	offset, pageSize int
+	upstream         UpstreamClient
+	progressHandler  progressFunc
 }
 
-func newSyncDispatcher(intervalInSeconds time.Duration) *syncDispatcher {
-	return &syncDispatcher{ticker: time.NewTicker(intervalInSeconds), force: make(chan bool), quit: make(chan struct{}), upstream: &upstreamClient{}}
+type syncProgress struct {
+	offset   int
+	langCode string
+	status   *libvarnam.LearnStatus
 }
 
-func (s *syncDispatcher) start() {
-	//err := createSyncMetadataDir()
-	//if err != nil {
-	//fmt.Printf("Failed to create sync metadata directory. Sync will be disabled.\nActual error: %s\n", err.Error())
-	//return
-	//}
-	//for s := range varnamdConfig.schemesToDownload {
-	//// download cache directory for each of the languages
-	//err = createLearnQueueDir(s)
-	//if err != nil {
-	//fmt.Printf("Failed to create learn queue directory for '%s'. Sync will be disabled.\nActual error: %s\n", err.Error())
-	//return
-	//}
-	//}
-
-	//go func() {
-	//for {
-	//select {
-	//case <-s.ticker.C:
-	//s.performSync()
-	//case <-s.force:
-	//s.performSync()
-	//case <-s.quit:
-	//s.ticker.Stop()
-	//return
-	//}
-	//}
-	//}()
+func newCorpusSync(langCode string, offset, pageSize int) *corpusSync {
+	return &corpusSync{
+		langCode: langCode,
+		offset:   offset,
+		pageSize: pageSize,
+		upstream: defaultUpstreamClient(langCode),
+	}
 }
 
-func (s *syncDispatcher) stop() {
-	close(s.quit)
-}
-
-func (s *syncDispatcher) runNow() {
-	s.force <- true
-}
-
-func (s *syncDispatcher) performSync() {
-	log.Println("---SYNC BEGIN---")
-	log.Printf("Config: %v\n", varnamdConfig)
-
-	//for langCode := range varnamdConfig.schemesToDownload {
-	//log.Printf("Sync: %s\n", langCode)
-	//s.syncWordsFromUpstreamFor(langCode)
-	//}
-
-	log.Println("---SYNC DONE---")
-}
-
-func (s *syncDispatcher) syncWordsFromUpstreamFor(langCode string) {
+func (s *corpusSync) start() error {
 	corpusDetails, err := s.upstream.GetCorpusDetails()
 	if err != nil {
-		log.Printf("Error getting corpus details for '%s'. %s\n", langCode, err.Error())
-		return
+		return fmt.Errorf("error getting corpus details for '%s'. %v", s.langCode, err)
 	}
 
-	localFilesToLearn := make(chan string, 100)
-	downloadedFilesToLearn := make(chan string, 100)
-	done := make(chan bool)
+	offset := s.offset
 
-	// adding files which are remaining to learn in the local learn queue
-	remainingFilesFromLastDownload := getFilesFromLearnQueue(langCode)
-	go addFilesFromLocalLearnQueue(langCode, remainingFilesFromLastDownload, localFilesToLearn)
-	go downloadAllWords(langCode, corpusDetails.WordsCount, downloadedFilesToLearn)
+	if offset >= corpusDetails.WordsCount {
+		return errNothingToSync
+	}
+
 	go func() {
-		learnAll(langCode, localFilesToLearn)
-		learnAll(langCode, downloadedFilesToLearn)
-		done <- true
+		for p := range s.downloadAllWordsFrom(offset, corpusDetails.WordsCount) {
+			status, err := s.learnWords(p)
+			if s.progressHandler == nil {
+				continue
+			}
+			if err != nil {
+				s.progressHandler(nil, err)
+				continue
+			}
+			s.progressHandler(&syncProgress{
+				offset:   offset,
+				langCode: s.langCode,
+				status:   status,
+			}, nil)
+		}
 	}()
 
-	<-done
+	return nil
 }
 
-func addFilesFromLocalLearnQueue(langCode string, files []string, filesToLearn chan string) {
-	if files != nil {
-		log.Printf("Adding %d files to learn from local learn queue\n", len(files))
-		for _, f := range files {
-			filesToLearn <- f
+func (s *corpusSync) downloadAllWordsFrom(offset, maxOffset int) <-chan *page {
+	const maxNoOfRetries = 10
+	pages := make(chan *page)
+	retries := maxNoOfRetries
+
+	go func() {
+		defer close(pages)
+		for offset < maxOffset {
+			p, err := s.upstream.DownloadWords(offset)
+			if err != nil {
+				retries = retries - 1
+				time.Sleep(10 * time.Second)
+				if retries == 0 {
+					if s.progressHandler != nil {
+						s.progressHandler(nil, fmt.Errorf("Failed to download words. offset: %d, error: %v", offset, err))
+					}
+					return
+				}
+				continue
+			}
+
+			retries = maxNoOfRetries
+			offset = offset + len(p.words)
+			pages <- p
 		}
-	} else {
-		log.Printf("Local learn queue for '%s' is empty", langCode)
+	}()
+
+	return pages
+}
+
+func (s *corpusSync) learnWords(p *page) (*libvarnam.LearnStatus, error) {
+	f, err := transformAndPersistWords(s.langCode, p)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to persist words to file for learning. %v", err)
 	}
-	close(filesToLearn)
-}
 
-func downloadAllWords(langCode string, corpusSize int, output chan string) {
-	for {
-		offset := getDownloadOffset(langCode)
-		log.Printf("Offset: %d\n", offset)
-		if offset >= corpusSize {
-			break
-		}
-		filePath, err := downloadWordsAndUpdateOffset(langCode, offset)
+	var ls *libvarnam.LearnStatus
+
+	_, err = getOrCreateHandler(s.langCode, func(handle *libvarnam.Varnam) (data interface{}, err error) {
+		learnStatus, err := handle.LearnFromFile(f)
 		if err != nil {
-			break
-		}
-		output <- filePath
-	}
-	log.Println("Local copy is upto date. No need to download from upstream")
-	close(output)
-}
-
-func learnAll(langCode string, filesToLearn chan string) {
-	for fileToLearn := range filesToLearn {
-		learnFromFile(langCode, fileToLearn)
-	}
-}
-
-func learnFromFile(langCode, fileToLearn string) {
-	log.Printf("Learning from %s\n", fileToLearn)
-	start := time.Now()
-	getOrCreateHandler(langCode, func(handle *libvarnam.Varnam) (data interface{}, err error) {
-		learnStatus, err := handle.LearnFromFile(fileToLearn)
-		end := time.Now()
-		if err != nil {
-			log.Printf("Error learning from '%s'\n", err.Error())
-		} else {
-			log.Printf("Learned from '%s'. TotalWords: %d, Failed: %d. Took %s\n", fileToLearn, learnStatus.TotalWords, learnStatus.Failed, end.Sub(start))
+			return nil, fmt.Errorf("Error learning from '%s'. %v", f, err)
 		}
 
-		err = os.Remove(fileToLearn)
-		if err != nil {
-			log.Printf("Error deleting '%s'. %s\n", fileToLearn, err.Error())
-		}
-
+		ls = learnStatus
+		os.Remove(f)
 		return
 	})
+
+	return ls, err
 }
 
-func downloadWordsAndUpdateOffset(langCode string, offset int) (string, error) {
-	//count, filePath, err := downloadWords(langCode, offset)
-	//if err != nil {
-	//log.Printf("Error downloading words for '%s'. %s\n", langCode, err.Error())
-	//return "", err
-	//}
-
-	//err = setDownloadOffset(langCode, offset+count)
-	//if err != nil {
-	//log.Printf("Error setting download offset for '%s'. %s\n", langCode, err.Error())
-	//return "", err
-	//}
-
-	//return filePath, nil
-	return "", nil
-}
-
-func getFilesFromLearnQueue(langCode string) []string {
-	var files []string
-	learnQueueDir := getLearnQueueDir(langCode)
-	queueContents, err := ioutil.ReadDir(learnQueueDir)
+func transformAndPersistWords(langCode string, p *page) (string, error) {
+	tmpDir := os.TempDir()
+	targetFile, err := os.Create(path.Join(tmpDir, fmt.Sprintf("%s.%d", langCode, p.offset)))
 	if err != nil {
-		return nil
+		return "", err
 	}
+	defer targetFile.Close()
 
-	for _, c := range queueContents {
-		if !c.IsDir() {
-			files = append(files, path.Join(learnQueueDir, c.Name()))
+	for _, word := range p.words {
+		_, err = targetFile.WriteString(fmt.Sprintf("%s %d\n", word.Word, word.Confidence))
+		if err != nil {
+			return "", err
 		}
 	}
-
-	return files
-}
-
-func getDownloadOffset(langCode string) int {
-	filePath := getDownloadOffsetMetadataFile(langCode)
-	content, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		return 0
-	}
-
-	offset, err := strconv.Atoi(strings.TrimSpace(string(content)))
-	if err != nil {
-		return 0
-	}
-
-	return offset
-}
-
-func setDownloadOffset(langCode string, offset int) error {
-	filePath := getDownloadOffsetMetadataFile(langCode)
-	return ioutil.WriteFile(filePath, []byte(fmt.Sprintf("%d", offset)), 0666)
-}
-
-func getDownloadOffsetMetadataFile(langCode string) string {
-	syncDir := getSyncMetadataDir()
-	return path.Join(syncDir, fmt.Sprintf("%s.download.offset", langCode))
-}
-
-func createLearnQueueDir(langCode string) error {
-	queueDir := getLearnQueueDir(langCode)
-	err := os.MkdirAll(queueDir, 0777)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func getLearnQueueDir(langCode string) string {
-	syncDir := getSyncMetadataDir()
-	queueDir := path.Join(syncDir, fmt.Sprintf("%s.learn.queue", langCode))
-	return queueDir
-}
-
-func createSyncMetadataDir() error {
-	syncDir := getSyncMetadataDir()
-	err := os.MkdirAll(syncDir, 0777)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func getSyncMetadataDir() string {
-	configDir := getConfigDir()
-	syncDir := path.Join(configDir, "sync")
-	return syncDir
+	return targetFile.Name(), nil
 }

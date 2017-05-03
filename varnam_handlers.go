@@ -13,7 +13,7 @@ import (
 )
 
 type word struct {
-	Id         int    `json:"id"`
+	ID         int    `json:"id"`
 	Confidence int    `json:"confidence"`
 	Word       string `json:"word"`
 }
@@ -63,6 +63,7 @@ func getOrCreateHandler(schemeIdentifier string, f func(handle *libvarnam.Varnam
 	case handle := <-ch:
 		data, err = f(handle)
 		go func() { ch <- handle }()
+		return data, err
 	case <-time.After(800 * time.Millisecond):
 		var handle *libvarnam.Varnam
 		handle, err = libvarnam.Init(schemeIdentifier)
@@ -72,8 +73,8 @@ func getOrCreateHandler(schemeIdentifier string, f func(handle *libvarnam.Varnam
 		}
 		data, err = f(handle)
 		go sendHandlerToChannel(schemeIdentifier, handle, ch)
+		return data, err
 	}
-	return
 }
 
 func transliterate(schemeIdentifier string, word string) (data interface{}, err error) {
@@ -113,7 +114,7 @@ func getWords(schemeIdentifier string, downloadStart int) ([]*word, error) {
 		var id, confidence int
 		var _word string
 		rows.Scan(&id, &_word, &confidence)
-		words = append(words, &word{Id: id, Confidence: confidence, Word: _word})
+		words = append(words, &word{ID: id, Confidence: confidence, Word: _word})
 	}
 
 	return words, nil

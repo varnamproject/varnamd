@@ -25,6 +25,12 @@ type upstreamClient struct {
 	url      string
 }
 
+const upstreamURL string = "https://api.varnamproject.com"
+
+func defaultUpstreamClient(langCode string) UpstreamClient {
+	return newUpstreamClient(langCode, upstreamURL)
+}
+
 func newUpstreamClient(langCode, url string) UpstreamClient {
 	return &upstreamClient{langCode: langCode, url: url}
 }
